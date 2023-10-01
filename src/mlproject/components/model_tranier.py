@@ -2,8 +2,8 @@ import os
 import sys
 from dataclasses import dataclass
 from urllib.parse import urlparse
-# import mlflow
-# import mlflow.sklearn
+import mlflow
+import mlflow.sklearn
 import numpy as np
 from sklearn.metrics import mean_squared_error,mean_absolute_error
 from catboost import CatBoostRegressor
@@ -22,16 +22,24 @@ from src.mlproject.exception import CustomException
 from src.mlproject.logger import logging
 from src.mlproject.utils import save_object,evaluate_models
 
+
 @dataclass
 class ModelTrainerConfig:
-    trained_model_file_path=os.path.join("artifacts",'model.pkl')
+    trained_model_file_path=os.path.join("artifacts","model.pkl")
+
 class ModelTrainer:
     def __init__(self):
         self.model_trainer_config=ModelTrainerConfig()
 
+    def eval_metrics(self,actual, pred):
+        rmse = np.sqrt(mean_squared_error(actual, pred))
+        mae = mean_absolute_error(actual, pred)
+        r2 = r2_score(actual, pred)
+        return rmse, mae, r2
+
     def initiate_model_trainer(self,train_array,test_array):
         try:
-            logging.info("Now split training and test input data")
+            logging.info("Split training and test input data")
             x_train,y_train,x_test,y_test=(
                 train_array[:,:-1],
                 train_array[:,-1],
@@ -54,7 +62,8 @@ class ModelTrainer:
                     # 'max_features':['sqrt','log2'],
                 },
                 "Random Forest":{
-                    # 'criterion':['squared_error', 'friedman_mse', 'absolute_error', 'poisson'],     
+                    # 'criterion':['squared_error', 'friedman_mse', 'absolute_error', 'poisson'],
+                 
                     # 'max_features':['sqrt','log2',None],
                     'n_estimators': [8,16,32,64,128,256]
                 },
@@ -84,38 +93,75 @@ class ModelTrainer:
                 
             }
             model_report:dict=evaluate_models(x_train,y_train,x_test,y_test,models,params)
-            # to get the best model score from the dict
-            best_model_score=max(sorted(model_report.values()))
+            ## To get best model score from dict
+            best_model_score = max(sorted(model_report.values()))
 
-            # to get the name of the best model
-            best_model_name=list(model_report.keys())[
+             ## To get best model name from dict
+
+            best_model_name = list(model_report.keys())[
                 list(model_report.values()).index(best_model_score)
             ]
-            print(f"\n\n{best_model_name}\n\n")
-            best_model=models[best_model_name]
-            
+            best_model = models[best_model_name]
+
+            print("This is the best model:")
+            print(best_model_name)
+
+            model_names = list(params.keys())
+
+            actual_model=""
+
+            for model in model_names:
+                if best_model_name == model:
+                    actual_model = actual_model + model
+
+            best_params = params[actual_model]
+
+            mlflow.set_registry_uri("https://dagshub.com/muhammadtalhaawan801/mlproject.mlflow")
+            tracking_url_type_store = urlparse(mlflow.get_tracking_uri()).scheme
+
+            # mlflow
+
+            with mlflow.start_run():
+
+                predicted_qualities = best_model.predict(x_test)
+
+                (rmse, mae, r2) = self.eval_metrics(y_test, predicted_qualities)
+
+                mlflow.log_params(best_params)
+
+                mlflow.log_metric("rmse", rmse)
+                mlflow.log_metric("r2", r2)
+                mlflow.log_metric("mae", mae)
+
+
+                # Model registry does not work with file store
+                if tracking_url_type_store != "file":
+
+                    # Register the model
+                    # There are other ways to use the Model Registry, which depends on the use case,
+                    # please refer to the doc for more information:
+                    # https://mlflow.org/docs/latest/model-registry.html#api-workflow
+                    mlflow.sklearn.log_model(best_model, "model", registered_model_name=actual_model)
+                else:
+                    mlflow.sklearn.log_model(best_model, "model")
+
+
+
+
             if best_model_score<0.6:
                 raise CustomException("No best model found")
-            
-            logging.info(f"Best found model on both train and testing dataset")
-            
+            logging.info(f"Best found model on both training and testing dataset")
+
             save_object(
                 file_path=self.model_trainer_config.trained_model_file_path,
                 obj=best_model
             )
+
             predicted=best_model.predict(x_test)
-            r2_square=r2_score(y_test,predicted)
 
-            logging.info(f"The selected best model {best_model_name} and r2_square of test dataset is {r2_square}")
-
+            r2_square = r2_score(y_test, predicted)
             return r2_square
 
+
         except Exception as e:
-            raise CustomException(e,sys)    
-
-
-
-
-
-
-
+            raise CustomException(e,sys)
